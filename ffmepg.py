@@ -287,7 +287,7 @@ class VideoPlayer(QWidget):
         )
 
         self.change_counter = 0
-        self.min_consecutive_changes = 2
+        self.min_consecutive_changes = 1  # 连续检测到变化的最小次数，调整为1以提高灵敏度
 
         self.initializing = True
         self.init_frames = 0
@@ -414,10 +414,10 @@ class VideoPlayer(QWidget):
         self.hide()
         
     def auto_hide_to_tray(self):
-        """10秒后自动隐藏到托盘"""
+        """5秒后自动隐藏到托盘"""
         if not self.isHidden():  # 如果窗口还没被隐藏
             self.hide_window()
-            print(f"{datetime.now()} 10秒自动隐藏到托盘")
+            print(f"{datetime.now()} 5秒自动隐藏到托盘")
 
     def on_frame_received(self, frame):
         """收到新帧"""
@@ -468,7 +468,7 @@ class VideoPlayer(QWidget):
             return frame
 
     def update_display(self):
-        """更新显示 - 只显示ROI区域"""
+        """更新显示 - 只显示ROI区域，用绿色框标记运动区域"""
         try:
             # 获取最新帧
             try:
@@ -531,12 +531,27 @@ class VideoPlayer(QWidget):
                 else:
                     self.change_counter = 0
                 
-                # 在显示画面上标记检测区域（可选）
+                # 用绿色框标记运动区域（改为外接矩形）
                 if change_detected:
                     # 将检测到的运动区域映射回显示画面
                     fgmask_big = cv2.resize(fgmask, (self.display_width, self.display_height))
-                    # 用红色半透明覆盖运动区域
-                    display_frame[fgmask_big > 0] = display_frame[fgmask_big > 0] * 0.7 + np.array([0, 0, 255]) * 0.3
+                    
+                    # 找到运动区域的轮廓
+                    contours, _ = cv2.findContours(fgmask_big.astype(np.uint8), 
+                                                   cv2.RETR_EXTERNAL, 
+                                                   cv2.CHAIN_APPROX_SIMPLE)
+                    
+                    # 为每个运动区域画绿色矩形框
+                    for contour in contours:
+                        # 过滤太小的区域
+                        if cv2.contourArea(contour) > 500:  # 最小区域面积
+                            x, y, w, h = cv2.boundingRect(contour)
+                            # 画绿色矩形框，线宽2
+                            cv2.rectangle(display_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                            
+                            # 可选：在矩形框上方添加标签
+                            cv2.putText(display_frame, "Motion", (x, y-5),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
             # 显示检测信息
             if not self.initializing:
@@ -592,23 +607,25 @@ class VideoPlayer(QWidget):
             # 闪烁窗口吸引注意力
             self.flash_window()
         
-        # 启动10秒自动隐藏定时器（先停止之前的）
+        # 启动5秒自动隐藏定时器（先停止之前的）
         self.auto_hide_timer.stop()
-        self.auto_hide_timer.start(10000)  # 10秒后自动隐藏
+        self.auto_hide_timer.start(5000)  # 5秒后自动隐藏
         
         if not self.hide_windows:
             self.hide_windows = True
             self.hide_other_window()
 
+            # 只播放提示音，不显示弹窗
             winsound.Beep(1000, 150)
-            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
-
-            self.tray_icon.showMessage(
-                "有人来了！",
-                f"检测到运动 ({score//1000}k像素)",
-                QSystemTrayIcon.Warning,
-                10000
-            )
+            # winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+            
+            # 注释掉或删除这行，不再显示系统托盘弹窗
+            # self.tray_icon.showMessage(
+            #     "有人来了！",
+            #     f"检测到运动 ({score//1000}k像素)",
+            #     QSystemTrayIcon.Warning,
+            #     5000
+            # )
 
         self.change_detected_timer.start(8000)
         self.setWindowTitle("监控-HIDDEN")
