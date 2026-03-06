@@ -5,7 +5,7 @@ import win32con
 import numpy as np
 import winsound
 from datetime import datetime
-from PyQt5.QtGui import QImage, QPixmap, QIcon
+from PyQt5.QtGui import QImage, QPixmap, QIcon, QKeyEvent
 from PyQt5.QtCore import QTimer, Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout, 
                              QSystemTrayIcon, QStyle, QMenu, QAction, 
@@ -18,197 +18,86 @@ import json
 
 
 class MagnifyWindow(QWidget):
-    """放大显示窗口"""
+    """放大显示窗口 - 固定在屏幕右边中间"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("运动目标放大")
-        self.setFixedSize(400, 300)  # 增大窗口尺寸
-        self.setWindowFlag(Qt.WindowStaysOnTopHint)  # 始终置顶
-        self.setWindowFlag(Qt.FramelessWindowHint)  # 无边框，更简洁
-        self.setAttribute(Qt.WA_TranslucentBackground)  # 透明背景
+        self.setFixedSize(320, 240)
         
-        # 设置窗口位置在原监控画面的正上方
-        if parent:
-            parent_geo = parent.geometry()
-            # 计算居中位置
-            x = parent_geo.x() + (parent_geo.width() - self.width()) // 2
-            y = parent_geo.y() - self.height() - 10  # 上方10像素
-            
-            # 确保不超出屏幕顶部
-            if y < 0:
-                y = parent_geo.y() + parent_geo.height() + 10  # 如果上方放不下，放到下方
-            
-            self.move(x, y)
-            print(f"放大窗口位置: ({x}, {y})")
+        # 使用标准窗口标志，确保能显示
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
         
-        # 创建一个容器来放内容，带边框和阴影效果
-        self.container = QLabel(self)
-        self.container.setGeometry(5, 5, self.width()-10, self.height()-10)
-        self.container.setStyleSheet("""
+        # 创建布局
+        layout = QVBoxLayout()
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        self.label = QLabel(self)
+        self.label.setMinimumSize(300, 220)
+        self.label.setStyleSheet("""
             background-color: black;
             border: 3px solid red;
-            border-radius: 5px;
         """)
-        
-        self.label = QLabel(self.container)
-        self.label.setGeometry(5, 5, self.container.width()-10, self.container.height()-10)
-        self.label.setScaledContents(True)
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("background-color: black;")
         
-        # 标题栏（用于拖动）
-        self.title_bar = QLabel(self)
-        self.title_bar.setGeometry(5, 5, self.width()-10, 25)
-        self.title_bar.setStyleSheet("""
-            background-color: rgba(255, 0, 0, 180);
-            color: white;
-            font-weight: bold;
-            padding-left: 5px;
-            border-top-left-radius: 5px;
-            border-top-right-radius: 5px;
-        """)
-        self.title_bar.setText(" 运动目标放大")
-        self.title_bar.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.title_bar.hide()  # 默认隐藏，鼠标移入时显示
+        layout.addWidget(self.label)
+        self.setLayout(layout)
         
-        # 关闭按钮
-        self.close_btn = QPushButton("×", self)
-        self.close_btn.setGeometry(self.width()-30, 5, 25, 25)
-        self.close_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 0, 0, 180);
-                color: white;
-                font-weight: bold;
-                font-size: 16px;
-                border: none;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 50, 50, 200);
-            }
-        """)
-        self.close_btn.clicked.connect(self.hide)
-        self.close_btn.hide()
+        # 计算屏幕右边中间的位置
+        screen = QApplication.primaryScreen().geometry()
+        # 右边位置 = 屏幕宽度 - 窗口宽度 - 20像素边距
+        x = screen.width() - self.width() - 20
+        # 中间位置 = 屏幕高度的一半 - 窗口高度的一半
+        y = (screen.height() - self.height()) // 2
+        self.move(x, y)
+        print(f"放大窗口固定位置: ({x}, {y})")
         
-        # 当前放大的区域
-        self.current_roi = None
+        # 定时器
         self.hide_timer = QTimer(self)
         self.hide_timer.timeout.connect(self.hide)
         self.hide_timer.setSingleShot(True)
         
-        # 鼠标跟踪
-        self.setMouseTracking(True)
-        self.container.setMouseTracking(True)
-        self.label.setMouseTracking(True)
-        self.title_bar.setMouseTracking(True)
+        # 当前显示的图像
+        self.current_image = None
         
-        # 拖动相关
-        self.dragging = False
-        self.drag_position = None
-        
-        # 先隐藏，等有运动再显示
+        # 默认隐藏
         self.hide()
         print(f"{datetime.now()} 放大窗口已创建")
     
-    def enterEvent(self, event):
-        """鼠标进入窗口时显示标题栏和关闭按钮"""
-        self.title_bar.show()
-        self.close_btn.show()
-        super().enterEvent(event)
-    
-    def leaveEvent(self, event):
-        """鼠标离开窗口时隐藏标题栏和关闭按钮"""
-        if not self.dragging:  # 拖动时不隐藏
-            self.title_bar.hide()
-            self.close_btn.hide()
-        super().leaveEvent(event)
-    
-    def mousePressEvent(self, event):
-        """点击窗口可以拖动"""
-        if event.button() == Qt.LeftButton:
-            self.dragging = True
-            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
-            event.accept()
-    
-    def mouseMoveEvent(self, event):
-        """允许拖动窗口"""
-        if event.buttons() == Qt.LeftButton and self.dragging:
-            self.move(event.globalPos() - self.drag_position)
-            event.accept()
-    
-    def mouseReleaseEvent(self, event):
-        """释放鼠标结束拖动"""
-        if event.button() == Qt.LeftButton:
-            self.dragging = False
-            # 如果不是在窗口内，隐藏标题栏
-            if not self.underMouse():
-                self.title_bar.hide()
-                self.close_btn.hide()
-            event.accept()
-    
-    def mouseDoubleClickEvent(self, event):
-        """双击切换置顶状态"""
-        if event.button() == Qt.LeftButton:
-            if self.windowFlags() & Qt.WindowStaysOnTopHint:
-                self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
-                self.title_bar.setStyleSheet("""
-                    background-color: rgba(100, 100, 100, 180);
-                    color: white;
-                    font-weight: bold;
-                    padding-left: 5px;
-                    border-top-left-radius: 5px;
-                    border-top-right-radius: 5px;
-                """)
-                self.close_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: rgba(100, 100, 100, 180);
-                        color: white;
-                        font-weight: bold;
-                        font-size: 16px;
-                        border: none;
-                        border-radius: 3px;
-                    }
-                    QPushButton:hover {
-                        background-color: rgba(150, 150, 150, 200);
-                    }
-                """)
-            else:
-                self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-                self.title_bar.setStyleSheet("""
-                    background-color: rgba(255, 0, 0, 180);
-                    color: white;
-                    font-weight: bold;
-                    padding-left: 5px;
-                    border-top-left-radius: 5px;
-                    border-top-right-radius: 5px;
-                """)
-                self.close_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: rgba(255, 0, 0, 180);
-                        color: white;
-                        font-weight: bold;
-                        font-size: 16px;
-                        border: none;
-                        border-radius: 3px;
-                    }
-                    QPushButton:hover {
-                        background-color: rgba(255, 50, 50, 200);
-                    }
-                """)
-            self.show()
+    def update_display(self, image):
+        """更新显示图像"""
+        if image is None:
+            return
+        
+        self.current_image = image.copy()
+        
+        try:
+            # 调亮放大窗口的画面
+            brightened = cv2.convertScaleAbs(image, alpha=1.3, beta=30)  # 增加亮度和对比度
+            
+            rgb = cv2.cvtColor(brightened, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb.shape
+            bytes_per_line = ch * w
+            qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg)
+            self.label.setPixmap(pixmap)
+        except Exception as e:
+            print(f"更新显示错误: {e}")
     
     def showEvent(self, event):
         """窗口显示时触发"""
+        # 确保窗口在屏幕右边中间（防止被意外移动）
+        screen = QApplication.primaryScreen().geometry()
+        x = screen.width() - self.width() - 20
+        y = (screen.height() - self.height()) // 2
+        self.move(x, y)
+        
         super().showEvent(event)
         self.raise_()
         self.activateWindow()
-        print(f"{datetime.now()} 放大窗口已显示")
+        print(f"{datetime.now()} 放大窗口已显示 - 位置: ({self.x()}, {self.y()})")
     
     def update_magnified_view(self, frame, roi_rect):
-        """
-        更新放大视图
-        roi_rect: (x, y, w, h) 在原图中的坐标和大小
-        """
+        """更新放大视图"""
         if frame is None or roi_rect is None:
             return
         
@@ -227,68 +116,52 @@ class MagnifyWindow(QWidget):
         roi_frame = frame[y:y+h, x:x+w]
         
         if roi_frame.size > 0:
-            # 获取显示区域大小
-            display_width = self.label.width()
-            display_height = self.label.height()
-            
-            if display_width <= 0 or display_height <= 0:
-                display_width = 380
-                display_height = 280
-            
-            # 获取ROI的宽高比
-            roi_aspect = w / h
-            display_aspect = display_width / display_height
-            
-            if roi_aspect > display_aspect:
-                new_w = display_width
-                new_h = int(display_width / roi_aspect)
-            else:
-                new_h = display_height
-                new_w = int(display_height * roi_aspect)
-            
             try:
-                magnified = cv2.resize(roi_frame, (new_w, new_h))
+                # 缩放以适应窗口
+                magnified = cv2.resize(roi_frame, (300, 220))
+                
+                # 调亮放大画面
+                magnified = cv2.convertScaleAbs(magnified, alpha=1.3, beta=30)
+                
+                # 添加信息
+                cv2.putText(magnified, f"Size: {w}x{h}", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                # 添加时间戳
+                time_str = datetime.now().strftime("%H:%M:%S")
+                cv2.putText(magnified, time_str, (300-100, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                # 添加提示文字
+                cv2.putText(magnified, "Press ENTER to capture", (50, 200), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                
+                self.update_display(magnified)
+                
+                # 确保窗口显示
+                if self.isHidden():
+                    self.show()
+                else:
+                    self.raise_()
+                    self.activateWindow()
+                
+                # 重置隐藏定时器
+                self.hide_timer.stop()
+                self.hide_timer.start(5000)
+                
             except Exception as e:
-                print(f"缩放失败: {e}")
-                return
-            
-            # 创建黑色背景的画布
-            canvas = np.zeros((display_height, display_width, 3), dtype=np.uint8)
-            
-            # 将放大后的图像居中放置
-            y_offset = (display_height - new_h) // 2
-            x_offset = (display_width - new_w) // 2
-            canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = magnified
-            
-            # 添加信息
-            cv2.putText(canvas, f"Size: {w}x{h}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            
-            # 添加时间戳
-            time_str = datetime.now().strftime("%H:%M:%S")
-            cv2.putText(canvas, time_str, (display_width-100, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            
-            # 转换并显示
-            rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb.shape
-            bytes_per_line = ch * w
-            qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
-            self.label.setPixmap(pixmap)
-            
-            self.current_roi = roi_rect
-            
-            # 确保窗口显示并置顶
-            if self.isHidden():
-                self.show()
+                print(f"处理放大视图错误: {e}")
+    
+    def mouseDoubleClickEvent(self, event):
+        """双击切换置顶状态"""
+        if event.button() == Qt.LeftButton:
+            if self.windowFlags() & Qt.WindowStaysOnTopHint:
+                self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
+                self.setWindowTitle("运动目标放大 (非置顶)")
             else:
-                self.raise_()
-                self.activateWindow()
-            
-            # 重置隐藏定时器（5秒后自动隐藏）
-            self.hide_timer.stop()
-            self.hide_timer.start(5000)
+                self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+                self.setWindowTitle("运动目标放大")
+            self.show()
     
     def closeEvent(self, event):
         """关闭窗口时隐藏而不是销毁"""
@@ -558,18 +431,58 @@ class VideoPlayer(QWidget):
         self.auto_hide_timer.timeout.connect(self.auto_hide_to_tray)
         self.auto_hide_timer.setSingleShot(True)
         
-        # 放大显示窗口 - 放在原监控画面上方
+        # 放大显示窗口
         self.magnify_window = MagnifyWindow(self)
         
         self.motion_active = False
         self.last_motion_time = time.time()
-        self.magnify_update_interval = 0.2
-        self.last_magnify_update = 0
+        
+        # 当前运动轮廓
+        self.current_motion_contours = []
+        
+        # 设置焦点，使能接收键盘事件
+        self.setFocusPolicy(Qt.StrongFocus)
         
         print(f"{datetime.now()} 监控程序启动 - ROI模式")
         print(f"ROI区域: x={self.roi['x']}, y={self.roi['y']}, w={self.roi['w']}, h={self.roi['h']}")
         print(f"显示分辨率: {self.display_width}x{self.display_height}")
         print(f"要隐藏的窗口: {self.window_name if self.window_name else '未设置'}")
+        print("按回车键(Enter)可以截取当前运动画面并放大显示")
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """键盘事件处理"""
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            # 按回车键时截取当前画面
+            self.capture_current_motion()
+        super().keyPressEvent(event)
+
+    def capture_current_motion(self):
+        """截取当前运动画面"""
+        print(f"{datetime.now()} 手动截取运动画面")
+        
+        if self.last_frame is None:
+            print("没有可用的画面")
+            return
+        
+        if not self.current_motion_contours:
+            print("当前没有检测到运动")
+            # 如果没有运动，可以截取整个ROI区域
+            frame = self.last_frame.copy()
+            roi_frame = self.extract_roi(frame)
+            if roi_frame.size > 0:
+                # 使用整个ROI作为区域
+                roi_rect = (self.roi["x"], self.roi["y"], self.roi_width, self.roi_height)
+                self.magnify_window.update_magnified_view(frame, roi_rect)
+                print("已截取整个监控区域")
+            return
+        
+        # 有运动，截取最大运动区域
+        frame = self.last_frame.copy()
+        roi_rect = self.get_largest_motion_region(self.current_motion_contours, frame.shape, 
+                                                  (self.roi["x"], self.roi["y"]))
+        if roi_rect:
+            self.magnify_window.update_magnified_view(frame, roi_rect)
+            print("已截取最大运动区域")
 
     def load_settings(self):
         try:
@@ -595,6 +508,13 @@ class VideoPlayer(QWidget):
         hide_action = QAction("隐藏到托盘", self)
         hide_action.triggered.connect(self.hide_window)
         tray_menu.addAction(hide_action)
+        
+        tray_menu.addSeparator()
+        
+        # 添加手动截取选项
+        capture_action = QAction("手动截取画面 (Enter)", self)
+        capture_action.triggered.connect(self.capture_current_motion)
+        tray_menu.addAction(capture_action)
         
         tray_menu.addSeparator()
         
@@ -645,6 +565,7 @@ class VideoPlayer(QWidget):
         self.setWindowState(Qt.WindowActive)
         self.raise_()
         self.activateWindow()
+        self.setFocus()  # 确保获得焦点，能接收键盘事件
         
     def hide_window(self):
         self.hide()
@@ -743,6 +664,9 @@ class VideoPlayer(QWidget):
             
             display_frame = cv2.resize(roi_frame, (self.display_width, self.display_height))
             
+            # 调亮监控画面
+            display_frame = cv2.convertScaleAbs(display_frame, alpha=1.3, beta=30)
+            
             detect_scale = 0.5
             detect_width = int(self.display_width * detect_scale)
             detect_height = int(self.display_height * detect_scale)
@@ -760,6 +684,7 @@ class VideoPlayer(QWidget):
                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 main_pixels = 0
                 change_detected = False
+                self.current_motion_contours = []
             else:
                 fgmask = self.bg_subtractor.apply(detect_frame)
                 fgmask = cv2.medianBlur(fgmask, 3)
@@ -790,21 +715,19 @@ class VideoPlayer(QWidget):
                                                    cv2.RETR_EXTERNAL, 
                                                    cv2.CHAIN_APPROX_SIMPLE)
                     
-                    motion_contours = []
+                    self.current_motion_contours = []
                     for contour in contours:
                         if cv2.contourArea(contour) > 500:
                             x, y, w, h = cv2.boundingRect(contour)
                             cv2.rectangle(display_frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
                             cv2.putText(display_frame, "Motion", (x, y-5),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                            motion_contours.append(contour)
+                            self.current_motion_contours.append(contour)
                     
-                    if motion_contours and (current_time - self.last_magnify_update) > self.magnify_update_interval:
-                        roi_rect = self.get_largest_motion_region(motion_contours, frame.shape, 
-                                                                  (self.roi["x"], self.roi["y"]))
-                        if roi_rect:
-                            self.magnify_window.update_magnified_view(frame, roi_rect)
-                            self.last_magnify_update = current_time
+                    # 不再自动截图，只显示提示
+                    if self.current_motion_contours:
+                        cv2.putText(display_frame, "Press ENTER to capture", (10, 90), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                 
                 chg_text = f"Motion: {main_pixels//100}K pixels"
                 cv2.putText(display_frame, chg_text, (10, 30), 
@@ -918,11 +841,6 @@ class VideoPlayer(QWidget):
             except Exception as e:
                 print(f"恢复窗口失败: {e}")
         self.setWindowTitle("监控 - ROI模式")
-
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Escape:
-            self.quit_app()
-        super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
